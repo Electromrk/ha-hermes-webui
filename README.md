@@ -105,7 +105,6 @@ New versions of Hermes and the WebUI aren't taken over automatically. Each updat
 │   ├── DOCS.md            # Documentation, shown in Home Assistant
 │   ├── CHANGELOG.md
 │   ├── translations/      # Option labels
-│   ├── claude-code/       # The pinned Claude Code CLI
 │   └── rootfs/            # s6 services, nginx and wrappers
 ├── tests/
 │   ├── gate.sh            # All automated checks on this machine
