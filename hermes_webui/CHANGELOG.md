@@ -6,7 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Ver
 
 This app is a fork of [WolframRavenwolf/hermes-ha-addon](https://github.com/WolframRavenwolf/hermes-ha-addon) at `v1.3.10`, with a different architecture. For earlier versions, see the changelog in that repository.
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-11-12
 
 First version of this fork.
 

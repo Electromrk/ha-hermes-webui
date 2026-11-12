@@ -19,7 +19,7 @@ To set it up:
    The code and the URL belong to your account, so please don't share them. The app never sees your password.
 5. Run `hermes model`, and pick **Claude Subscription DirectSDK (Experimental)** near the end of the list, not **Anthropic**. Pressing Enter twice then keeps Sonnet and the suggested reasoning level.
 
-**Status:** in development and not yet released. Tested on a real Raspberry Pi 5 (8 GB) with a separate test installation; see the changelog. This is an independent project, not made or endorsed by Nous Research or Anthropic.
+**Status:** first release, 0.1.0. Tested on a real Raspberry Pi 5 (8 GB) with a separate test installation; see the changelog. This is an independent project, not made or endorsed by Nous Research or Anthropic.
 
 ## Main features
 
@@ -86,8 +86,6 @@ This project started as a fork of [hermes-ha-addon](https://github.com/WolframRa
 4. Open it from the sidebar and follow the setup wizard.
 
 The full guide is in the [documentation](hermes_webui/DOCS.md), which Home Assistant also shows on the app's page.
-
-**While this repository is private,** Home Assistant can't read it without a token in the URL, and we advise against that, because the URL then appears in Home Assistant's log. Copy the `hermes_webui` folder to the `local_apps` share of the official Samba app instead.
 
 ## Updates
 
