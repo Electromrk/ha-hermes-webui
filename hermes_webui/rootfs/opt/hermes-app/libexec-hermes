@@ -1,0 +1,18 @@
+#!/bin/sh
+# Installed as /opt/hermes/libexec/hermes, because the agent prepends that folder to PATH. The
+# upstream launcher is hermes.real next to it.
+for argument in "$@"; do
+  case "$argument" in
+    -*) ;;
+    update)
+      echo "Updates are delivered as new app versions in Home Assistant." >&2
+      exit 1
+      ;;
+    *) break ;;
+  esac
+done
+# The webui terminal passes only an allowlist of variables, so these do not reach this shell.
+export HERMES_HOME="${HERMES_HOME:-/config/hermes}"
+export HERMES_WRITE_SAFE_ROOT="${HERMES_WRITE_SAFE_ROOT:-/config/hermes}"
+export HERMES_DISABLE_LAZY_INSTALLS=1
+exec /opt/hermes/libexec/hermes.real "$@"

@@ -1,0 +1,14 @@
+#!/bin/sh
+# s6 runs this as root after every end of ./run, with its exit code (256 for a signal) and the signal.
+# s6 then starts ./run again, always: this script never asks for the service to stay down, unlike the base
+# image's own slot, which turns exit code 78 into a permanent stop. The pause after 78 happens in ./run:
+# on a stop, s6 waits for this script and kills it only after its 5 s limit (measured), so a pause here
+# would be cut short and would hold up every stop.
+if [ "$1" = 78 ]; then
+  echo "[hermes-gateway] ERROR: The gateway stopped with a configuration error (exit code 78)." \
+    "The usual cause is a messenger bot token that another program or Hermes installation already uses." \
+    "Fix or remove that messenger's lines in /config/hermes/.env" \
+    "and restart the app. Cron jobs don't run meanwhile. The gateway tries again in 30 s."
+  : >/run/hermes-app/gateway-paused
+fi
+exit 0

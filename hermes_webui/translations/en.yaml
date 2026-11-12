@@ -1,0 +1,34 @@
+configuration:
+  enable_terminal:
+    name: Web terminal
+    description: >-
+      Turns on the terminal inside the WebUI, which you open with the /terminal command in a
+      session. It runs as the app's runtime user, and only Home Assistant administrators can reach
+      it. Your browser needs internet access for it. This switch doesn't control the agent's own
+      terminal tool.
+  claude_subscription:
+    name: Claude subscription provider (experimental)
+    description: >-
+      Off by default. Makes the experimental plugin claude-subscription-directsdk available, which
+      uses your own Claude subscription through the official Claude Code CLI. The plugin sets a
+      fixed caller name and routes each request through a local relay, which may carry a risk for
+      your account. Turning this on is your own decision. This feature is not made or endorsed by
+      Anthropic. Read the Claude section of the documentation first.
+  homeassistant_token:
+    name: Home Assistant long-lived token
+    description: >-
+      Optional. Leave empty to use the Supervisor's token, which is what most installs want. With a
+      token here, the agent talks to Home Assistant directly, as the user who created the token.
+      If the token isn't accepted, the app logs a warning and uses the Supervisor's token.
+  env_vars:
+    name: Environment variables for Hermes
+    description: >-
+      Written to Hermes' .env at every start, for example provider API keys or a messenger's bot
+      token. A name you remove here is removed from .env again, and keys you added to that file by
+      hand stay. Values must be a single line, and Hermes expands ${NAME} inside them. Names the app
+      sets itself are refused when you save.
+  log_level:
+    name: Log level
+    description: >-
+      How much the app's startup messages, nginx and Hermes' own log files record. The WebUI's
+      request lines in the app log stay as they are.

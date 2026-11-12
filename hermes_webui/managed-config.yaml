@@ -1,0 +1,47 @@
+# Managed layer: copied to /etc/hermes/config.yaml. The agent loads it last, and it can't be changed
+# from within Hermes. The webui doesn't read it, so its settings.json is enforced separately.
+auth:
+  adopt_external_logins: false
+security:
+  allow_lazy_installs: false
+updates:
+  check: false
+plugins:
+  auto_update_check_hours: 0
+  auto_apply: false
+logging:
+  # hermes-init rewrites this line from the log_level option at every start.
+  level: INFO
+# The browser-hosted Desktop on the gateway's own listener. Its webapp.host can be a wildcard, and the app
+# has no port for it. Off, the gateway's listener stays on 127.0.0.1.
+webapp:
+  enabled: false
+gateway:
+  # A direct message from someone who isn't on a messenger's allowlist gets no answer at all, not a
+  # pairing code. Pairing still works through hermes pairing in the terminal.
+  unauthorized_dm_behavior: ignore
+# The app has no port for inbound listeners, so these platforms could never be reached and some of them
+# bind every interface. Off here, the credentials in .env don't start them. When config.yaml is broken,
+# Hermes skips this file, so /etc/hermes/.env keeps the same listeners off or on loopback as well.
+platforms:
+  webhook:
+    enabled: false
+  api_server:
+    enabled: false
+  msgraph_webhook:
+    enabled: false
+  line:
+    enabled: false
+  whatsapp_cloud:
+    enabled: false
+  wecom_callback:
+    enabled: false
+  teams:
+    enabled: false
+  raft:
+    # Loopback by default, and only config.yaml can change that, so it is pinned here.
+    extra:
+      host: 127.0.0.1
+  homeassistant:
+    # No "gateway online" and shutdown messages: every cold backup stops the app and would post two.
+    gateway_restart_notification: false

@@ -1,0 +1,23 @@
+#!/command/with-contenv bash
+# shellcheck shell=bash
+# The webui in the foreground as uid 10000, started directly because bootstrap.py can install
+# packages. Readiness goes through fd 3 once /health answers. SIGTERM reaches server.py, which drains
+# running chats for up to 30 s; timeout-kill ends it after 40 s, inside the app's timeout of 60 s.
+set -e
+# HASS_URL and HASS_TOKEN, chosen by hermes-init. They stay in this environment and never reach .env.
+# shellcheck disable=SC1091
+source /run/hermes-app/ha-access.env
+# SUPERVISOR_TOKEN stays, so scripts the agent runs from a chat can call http://supervisor/core/api like
+# cron scripts in the gateway (decision 12 in docs/architecture.md). The old name of the same token goes.
+unset HASSIO_TOKEN
+export HERMES_WEBUI_HOST=127.0.0.1 HERMES_WEBUI_PORT=8787
+export HERMES_WEBUI_AGENT_DIR=/opt/hermes HERMES_WEBUI_FOREGROUND=1 HERMES_WEBUI_DISABLE_LOCAL_VENV=1
+export HERMES_WEBUI_STATE_DIR=/config/hermes/webui HERMES_WEBUI_DEFAULT_WORKSPACE=/config/hermes/workspace
+export HERMES_WEBUI_TRUSTED_AUTH_HEADER=X-Remote-User-Id HERMES_WEBUI_TRUSTED_PROXY_CIDRS=127.0.0.1/32
+export HERMES_WEBUI_PLUGINS_DIR=/opt/hermes-app/empty-plugins
+# s6-notifyoncheck needs the service directory as its working directory, so only the child changes it.
+# 2400 tries at 500 ms: a slow first start on a small device must not leave nginx waiting for good.
+# The check runs as root, and the runtime user can write to its own HOME: -q, as curl's first argument,
+# keeps it from reading a .curlrc. Root's HOME is /root (see the Dockerfile); only the webui gets this one.
+exec s6-notifyoncheck -d -n 2400 -w 500 -c "curl -q -fs -m 2 -o /dev/null http://127.0.0.1:8787/health" \
+  s6-setuidgid hermes /bin/sh -c 'export HOME=/tmp/hermes-home; cd /opt/hermes-webui && exec /opt/hermes/.venv/bin/python server.py'

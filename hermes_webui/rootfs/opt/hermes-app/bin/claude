@@ -1,0 +1,11 @@
+#!/bin/sh
+# Runs the CLI as published and sets only its environment. The webui's terminal passes an allowlist of
+# variables, so the login folder and the update switches wouldn't reach it otherwise. Every other
+# route, the plugin included, finds this wrapper first on PATH, so the login is always this folder.
+# USER and LOGNAME are what the plugin sets for its requests: upstream reports a logged-in CLI
+# answering "not logged in" without them (plugin issue #44).
+export CLAUDE_CONFIG_DIR=/data/claude
+export DISABLE_AUTOUPDATER=1
+export DISABLE_UPDATES=1
+export USER="${USER:-hermes}" LOGNAME="${LOGNAME:-hermes}"
+exec /opt/claude-code/node_modules/.bin/claude "$@"

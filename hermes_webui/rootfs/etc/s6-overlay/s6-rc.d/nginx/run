@@ -1,0 +1,4 @@
+#!/bin/sh
+# Depends on hermes-webui, so it starts after the webui is ready and stops before it.
+# No with-contenv: nginx needs nothing from the container environment, so it never holds a token.
+exec /usr/sbin/nginx -c /opt/hermes-app/nginx/nginx.conf -g 'daemon off;'

@@ -1,0 +1,76 @@
+# Every key here is checked against https://contributors.home-assistant.io/apps/reference/configuration/
+# because the Supervisor silently ignores unknown keys.
+name: Hermes Agent (WebUI)
+version: "0.1.0"
+slug: hermes_webui
+description: Hermes Agent with the Hermes WebUI, in the Home Assistant sidebar
+url: https://github.com/Electromrk/ha-hermes-webui
+arch:
+  - amd64
+  - aarch64
+# No image key: every device builds the app itself from the Dockerfile (CLAUDE.md section 2.2).
+init: false
+startup: application
+boot: auto
+# The webui's shutdown drain can take 30 s; s6 kills the webui after 40 s and the gateway, which gives a
+# running task 30 s, after 45 s (timeout-kill). Both stop in parallel, so 60 s leaves room for the rest.
+timeout: 60
+ingress: true
+ingress_port: 8099
+ingress_stream: true
+panel_icon: mdi:robot-outline
+panel_title: Hermes Agent
+panel_admin: true
+homeassistant_api: true
+watchdog: http://[HOST]:[PORT:8099]/health
+map:
+  - type: app_config
+    read_only: false
+# Cold: the Supervisor stops the app for the backup, so state.db and its WAL are consistent.
+backup: cold
+# A safety net for what can be regenerated. The Supervisor matches each pattern with
+# PurePath.match() against its own host path, anchored on the right, so a bare "tools/*" would also
+# hit workspace/proj/tools/. The "*_hermes_webui/hermes/" prefix anchors each pattern to the top of
+# HERMES_HOME and works for both local_ and store-id slugs. tests/test_backup_policy.py checks this.
+backup_exclude:
+  - "*_hermes_webui/hermes/logs/*"
+  - "*_hermes_webui/hermes/cache/*"
+  - "*_hermes_webui/hermes/tools/*"
+  - "*_hermes_webui/hermes/installs/*"
+  - "*_hermes_webui/hermes/environments/*"
+  - "*_hermes_webui/hermes/models_dev_cache.*"
+  # Debug dumps of failed API calls, 66 KB each with no limit on their number. The key in them is masked.
+  - "*_hermes_webui/hermes/sessions/request_dump_*"
+  # Full zips of HERMES_HOME, from hermes import-agent. config.yaml's small copies in backups/config stay.
+  - "*_hermes_webui/hermes/backups/*.zip"
+options:
+  enable_terminal: false
+  claude_subscription: false
+  env_vars: []
+  log_level: info
+schema:
+  enable_terminal: bool
+  claude_subscription: bool
+  homeassistant_token: password?
+  env_vars:
+    # The names the app sets itself are refused here, so that a mistake shows when saving. The first
+    # group are prefixes. env_sync.py is the source of the list, checks again at every start, and
+    # tests/test_manifest.py compares the two. The backslashes join the lines without a space. It ends
+    # in \Z, because the Supervisor's re.match with a "$" would take a name with a trailing line break.
+    - name: "match(^(?!(?:HERMES_WEBUI_|HERMES_MANAGED|HERMES_DASHBOARD|HERMES_HOME_|HERMES_CONFIG|\
+        HERMES_ENV|HERMES_GATEWAY_|GATEWAY_RELAY_|API_SERVER_|MSGRAPH_WEBHOOK_)|(?:\
+        A2A_HOST|BLUEBUBBLES_WEBHOOK_HOST|CLAUDE_CODE_ENTRYPOINT|CLAUDE_CODE_OAUTH_TOKEN|\
+        CLAUDE_CONFIG_DIR|CLAUDE_SUBSCRIPTION_DIRECTSDK_COMMAND|\
+        CLAUDE_SUBSCRIPTION_DIRECTSDK_CONFIG_DIR|DISABLE_AUTOUPDATER|DISABLE_UPDATES|\
+        FEISHU_WEBHOOK_HOST|GATEWAY_MULTIPLEX_PROFILES|GATEWAY_ON_ALL_ADAPTERS_DOWN|HASSIO_TOKEN|\
+        HASS_HOME_CHANNEL|HASS_TOKEN|HASS_URL|HERMES_ALLOW_ROOT_GATEWAY|HERMES_BUNDLED_PLUGINS|\
+        HERMES_DISABLE_LAZY_INSTALLS|HERMES_HOME|HERMES_IGNORE_USER_CONFIG|HERMES_PYTHON|\
+        HERMES_REAL_HOME|HERMES_RUNTIME_DIR|HERMES_S6_SUPERVISED_CHILD|HERMES_SUPERVISED_CHILD|\
+        HERMES_TUI_DIR|HERMES_WEB_DIST|HERMES_WRITE_SAFE_ROOT|HOME|LINE_HOST|NPM_CONFIG_CACHE|PATH|\
+        PIP_CACHE_DIR|SMS_WEBHOOK_HOST|SUPERVISOR_TOKEN|TEAMS_HOST|TELEGRAM_WEBHOOK_HOST|\
+        TELEGRAM_WEBHOOK_PORT|TELEGRAM_WEBHOOK_SECRET|TELEGRAM_WEBHOOK_URL|UV_CACHE_DIR|\
+        WEBHOOK_ENABLED|WEBHOOK_PORT|WEBHOOK_SECRET|WECOM_CALLBACK_HOST|WHATSAPP_CLOUD_WEBHOOK_HOST|\
+        XDG_CACHE_HOME|XDG_RUNTIME_DIR\
+        )$)[A-Z_][A-Z0-9_]*\\Z)"
+      value: str
+  log_level: list(debug|info|warning|error)

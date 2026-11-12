@@ -1,0 +1,49 @@
+#!/command/with-contenv bash
+# shellcheck shell=bash
+# The Hermes gateway as uid 10000: the only place where cron jobs fire, and the messengers once the user
+# sets one up. It depends on hermes-init only, and nginx doesn't depend on it, because a slow messenger
+# connect may take about 45 s. SIGTERM makes it drain running cron jobs for up to 30 s; timeout-kill
+# ends it after 45 s, inside the app's timeout of 60 s. Everything that waits here is a plain foreground
+# command without a trap, so a stop ends it at once.
+set -e
+readonly RUN_DIR=/run/hermes-app
+# HASS_URL and HASS_TOKEN, chosen by hermes-init, as for the webui. They never reach .env.
+# shellcheck disable=SC1091
+source "$RUN_DIR/ha-access.env"
+# Scripts run by cron jobs read SUPERVISOR_TOKEN to call http://supervisor/core/api (decision 12 in
+# docs/architecture.md); Hermes strips HASS_TOKEN from them. The old name of the same token goes.
+unset HASSIO_TOKEN
+# The base image's own s6 slot sets these two. Without them the gateway tries to register a slot of its
+# own under /run/service, which uid 10000 can't write.
+export HERMES_S6_SUPERVISED_CHILD=1 HERMES_SUPERVISED_CHILD=1
+# Cron keeps running when every messenger is down or none is set up. Only the environment sets this.
+export GATEWAY_ON_ALL_ADAPTERS_DOWN=stay_alive
+# Failure alerts and deliver=origin without an origin go to Home Assistant. Connected, the gateway posts a
+# persistent notification and ignores the name; offline, it calls notify.<name>, and HA's
+# notify.persistent_notification makes the same notification.
+export HASS_HOME_CHANNEL=persistent_notification
+
+level="$(cat "$RUN_DIR/log-level" 2>/dev/null || echo info)"
+
+# Written by ./finish after exit code 78, which the gateway repeats at every start until its cause is
+# fixed. The pause keeps that from becoming a restart every second against the messenger's servers.
+if [[ -e "$RUN_DIR/gateway-paused" ]]; then
+  rm -f "$RUN_DIR/gateway-paused"
+  sleep 30
+fi
+
+# The gateway writes config.yaml at its first start, and the webui's setup wizard then refuses to save
+# (it never sends confirm_overwrite). So it waits for the file the wizard writes; the wizard writes it
+# atomically, and the 2 s let its .env line follow. It checks every 3 s, with no work in between.
+# shellcheck disable=SC2016  # The inner shell expands these.
+exec s6-setuidgid hermes /bin/sh -c '
+  export HOME=/tmp/hermes-home
+  cd /config/hermes
+  if [ ! -e config.yaml ]; then
+    [ "$1" = warning ] || [ "$1" = error ] ||
+      echo "[hermes-gateway] Cron jobs and messengers start once the setup wizard has saved a provider."
+    while [ ! -e config.yaml ]; do sleep 3; done
+    sleep 2
+  fi
+  exec /opt/hermes/.venv/bin/hermes gateway run --replace
+' sh "$level"

@@ -1,0 +1,7 @@
+# The build context holds only what the Dockerfile copies. Add a line here for any new COPY source.
+*
+!claude-code/
+!managed-config.yaml
+!rootfs/
+**/__pycache__
+**/*.pyc
