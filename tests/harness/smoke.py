@@ -20,6 +20,7 @@ from harness import (  # noqa: E402
     APP_IP,
     HA,
     HOST_PORTS,
+    INGRESS,
     INGRESS_PREFIX,
     LONG_LIVED_TOKEN,
     SUPERVISOR_TOKEN,
@@ -52,7 +53,16 @@ DENIED_PATHS = [
     "api//updates/apply", "api/%75pdates/apply",
 ]
 # Must still reach the webui. A block that is too wide would break these.
-NOT_DENIED_PATHS = ["api/updates/check", "api/health/agent", "api/auth/status", "api/settings"]
+NOT_DENIED_PATHS = ["api/health/agent", "api/auth/status", "api/settings"]
+# Python's str.split() treats these raw bytes as whitespace, so nginx refuses them with 400.
+RAW_BYTE_PATHS = [b"/api/updates/clear_lock\x85", b"/api/extensions/registry\x85", b"/api/updates/apply\xa0",
+                  b"/api/terminal/start\x85"]
+# curl percent-encodes such bytes, so this sends the request line as it is, from the Supervisor's address.
+RAW_REQUEST = """import socket, sys
+with socket.create_connection((sys.argv[1], 8099), timeout=8) as c:
+    c.sendall(bytes.fromhex(sys.argv[2]) + b"\\r\\nHost: x\\r\\nX-Remote-User-Id: harness\\r\\nContent-Length: 2\\r\\nConnection: close\\r\\n\\r\\n{}")
+    print(c.recv(64).split(b" ")[1].decode())
+"""
 # Each of these answers without reading the body, or fails before it does, on some path of the webui.
 SMUGGLING_CARRIERS = [
     ("OPTIONS", ""), ("GET", "favicon.ico"), ("GET", "api/auth/status"), ("GET", "static/nope.js"), ("GET", "health"),
@@ -359,12 +369,24 @@ done""").stdout.split()
         self.check("denied: neighbouring paths still work", not wrong, wrong or NOT_DENIED_PATHS)
         status, payload = self.user.request("GET", "api/updates/check")
         self.check("updates: the check is off", status == 200 and isinstance(payload, dict) and payload.get("disabled") is True, payload)
+        # The webui's "Check now" button and the channel switch post force=true, which bypasses check_for_updates.
+        status, payload = self.user.request("POST", "api/updates/check", {"force": True})
+        self.check("updates: a forced check is off too", status == 200 and payload == {"disabled": True}, payload)
+        wrong = []
+        for path in RAW_BYTE_PATHS:
+            for method in ("GET", "POST"):
+                line = method.encode() + b" " + path + b" HTTP/1.1"
+                result = docker("exec", INGRESS, "/opt/hermes/.venv/bin/python", "-I", "-c", RAW_REQUEST, APP_IP, line.hex(), check=False)
+                code = result.stdout.strip() or result.stderr.strip()[-80:]
+                if code != "400":
+                    wrong.append((method, path, code))
+        self.check("denied: raw bytes outside printable ASCII are refused", not wrong, wrong or f"{len(RAW_BYTE_PATHS)} paths, GET and POST")
 
-        script = ("for form in 'hermes update' 'hermes --quiet update' '/opt/hermes/libexec/hermes update'; do "
+        script = ("for form in 'hermes update' 'hermes --quiet update' 'hermes -m x update' '/opt/hermes/libexec/hermes update'; do "
                   "out=$($form 2>&1); echo \"$form|$?|$out\"; done; out=$(bash -lc 'hermes update' 2>&1); echo \"login|$?|$out\"")
         lines = self.as_hermes(script).stdout.splitlines()
         wrong = [line for line in lines if f"|1|{MESSAGE_UPDATE}" not in line]
-        self.check("updates: hermes update is blocked in every shell", len(lines) == 4 and not wrong, wrong or "4 forms, exit 1")
+        self.check("updates: hermes update is blocked in every shell", len(lines) == 5 and not wrong, wrong or "5 forms, exit 1")
         output = self.as_hermes("hermes --version 2>&1 | head -1; bash -lc 'command -v hermes'; env | grep -E '^(HOME|HERMES_HOME|HERMES_WRITE_SAFE_ROOT)='").stdout
         self.check("updates: other hermes commands still work", "/opt/hermes-app/bin/hermes" in output and "ermes" in output.splitlines()[0],
                    output.splitlines()[0] if output else "")

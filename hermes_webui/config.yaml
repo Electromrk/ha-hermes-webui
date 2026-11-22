@@ -1,7 +1,7 @@
 # Every key here is checked against https://contributors.home-assistant.io/apps/reference/configuration/
 # because the Supervisor silently ignores unknown keys.
 name: Hermes Agent (WebUI)
-version: "0.1.0"
+version: "0.1.1"
 slug: hermes_webui
 description: Hermes Agent with the Hermes WebUI, in the Home Assistant sidebar
 url: https://github.com/Electromrk/ha-hermes-webui

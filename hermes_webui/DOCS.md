@@ -11,7 +11,7 @@ All code is part of the app's image. Your data stays in two folders, and updates
 3. Start the app, and turn on **Show in sidebar**.
 4. Turn on the **Watchdog** switch on the app's page. It's off by default on every install, and an app can't turn it on by itself. With it on, Home Assistant restarts the app if the WebUI hangs.
 
-The app supports `amd64` and `aarch64`. Home Assistant builds it on your device, which downloads about 1.3 GB and takes a while on a small device.
+The app supports `amd64` and `aarch64`. Home Assistant builds it on your device, which downloads about 1.3 GB. On a Raspberry Pi 5 the first install took about 5 minutes on an SSD and about 22 minutes on a microSD card (measured). On the SD card the processor wasn't the limit; most of the time went into writing to the card (estimated). So on an SD card, expect more than 20 minutes for the first install. An SSD is much faster.
 
 ## First steps: choosing a provider
 
@@ -132,7 +132,7 @@ Chats with a messenger run in the same Hermes profile, so the WebUI lists them t
 
 **Your home directory isn't kept.** `~` is `/tmp/hermes-home`, so whatever the agent or you put there is gone after a restart. Keep files in the workspace.
 
-**A backup stops the app for its duration.** Home Assistant stops the app, packs the data and starts it again, which keeps the database consistent. A running chat or cron job is interrupted, and the chat then shows "Response interrupted". On a Raspberry Pi 5 the app was down for about a minute (measured), most of it for packing the image.
+**A backup stops the app for its duration.** Home Assistant stops the app, packs the data and starts it again, which keeps the database consistent. A running chat or cron job is interrupted, and the chat then shows "Response interrupted". On a Raspberry Pi 5 the app was down for about a minute on an SSD and for 3 to 5½ minutes on a microSD card (measured in two runs), most of it for packing the 1.3 GB image, which Home Assistant does while the app is stopped. So on an SD card, expect the app to be unavailable for several minutes during every backup.
 
 Backups contain your data and your secrets, so please encrypt them. They hold `.env` with your API keys and messenger tokens, the values of `homeassistant_token` and `env_vars`, the app's Supervisor token in the backup's own `addon.json`, and the Claude login if you use it.
 
@@ -182,7 +182,7 @@ This app is an independent project. Anthropic didn't build it and doesn't endors
 
 The caller name and the relay have no setting.
 
-**Scheduled tasks and messengers may not work with it.** The plugin has an open issue saying it fails on the gateway surface ([hermes-official-plugins#47](https://github.com/NousResearch/hermes-official-plugins/issues/47)), and scheduled agent tasks and messenger chats run in the gateway. So with this provider, they may fail, while chats in the WebUI work. This hasn't been tested in this app.
+**Scheduled tasks and messengers may not work with it.** An issue reported that the plugin fails on the gateway surface ([hermes-official-plugins#47](https://github.com/NousResearch/hermes-official-plugins/issues/47)). It was closed as not reproducible, without a code change. Scheduled agent tasks and messenger chats run in the gateway, so with this provider they may still fail, while chats in the WebUI work. This hasn't been tested in this app.
 
 **This may carry a risk for your account.** Anthropic's Consumer Terms restrict automated access unless Anthropic permits it, and whether this plugin's way of running the CLI fits those terms isn't settled. In [`anthropics/claude-code#97074`](https://github.com/anthropics/claude-code/issues/97074) Anthropic hasn't commented, and a user warns that relabelling could count as getting around usage limits.
 
@@ -194,6 +194,7 @@ The caller name and the relay have no setting.
 4. Open the URL it shows in your browser, and sign in.
 5. Paste the code back into the terminal.
 6. Run `hermes model`, and pick **Claude Subscription DirectSDK (Experimental)** near the end of the list, not **Anthropic**. The model list then starts on Sonnet, the recommended default, so Enter is enough, and Enter also keeps the reasoning level it asks about next. You can also do this in the WebUI, under **Settings > Preferences**: choose a model from that provider's group, then press **Save**. Until you save, nothing is configured, even though Sonnet already shows as selected there, and a chat answers `No LLM provider configured`.
+7. Start a new chat with the **+** button (**New conversation**) before you send a message. The chat in which you opened the terminal was created before any provider existed, so the WebUI gave it its built-in default model `openai/gpt-5.4-mini`. That chat keeps this model after step 6, whether you used `hermes model` or the settings, and sends it to Anthropic, which fails (see [Claude troubleshooting](#claude-troubleshooting)). Other chats from before step 6 behave the same. To keep using such a chat, pick the Claude model in its model picker instead.
 
 At every start, the app's log says `Claude CLI logged in: yes` or `no`. That comes from the exit code of `claude auth status`, which only looks at the local login. The app logs no account details.
 
@@ -226,9 +227,11 @@ The app's own code never asks for, reads or stores your credentials. Only the CL
 
 ### Claude troubleshooting
 
-**HTTP 400, "Third-party apps now draw from extra usage, not plan limits".** Users of Team and Enterprise plans have reported this with the plugin's fixed caller name ([plugin issue #296](https://github.com/NousResearch/hermes-official-plugins/issues/296)). It has no setting in this version. A Pro plan worked in our tests, most recently on 2026-11-11 with the plugin version in this app. This can change on Anthropic's side at any time.
+**HTTP 400, "Third-party apps now draw from extra usage, not plan limits".** Users of Team and Enterprise plans have reported this with the plugin's fixed caller name ([plugin issue #296](https://github.com/NousResearch/hermes-official-plugins/issues/296)). It has no setting in this version. A Pro plan worked in our tests, most recently on 2026-11-20 with plugin 0.3.5 and Claude Code 2.1.325, the versions in this app. This can change on Anthropic's side at any time.
 
 **HTTP 401, "Claude Code is installed but has no usable login".** You aren't logged in, or the login has expired or been revoked. Run `claude auth login` in the terminal, even if the log says `yes`. That message also suggests `CLAUDE_CODE_OAUTH_TOKEN`, `claude setup-token` and the `claude_config_dir` setting. This app doesn't support them: `env_vars` refuses that name, and the login always lives in `/data/claude`.
+
+**`Model not found: HTTP 404`, with `model: openai/gpt-5.4-mini` and `HERMES_MODEL_ADMISSION_CONSUMED` in the message.** The chat was created before you set up the provider, so it still has the WebUI's built-in default model, and the plugin asks Anthropic for that OpenAI model. Start a new chat, or pick the Claude model in that chat's model picker. `HERMES_MODEL_ADMISSION_CONSUMED` only means that the plugin's relay refused the CLI's own retries after the first 404, as described under [What it does](#what-it-does). It isn't a separate fault.
 
 **HTTP 429, or a message about a limit.** You've used up a window of your plan. Wait until it resets, or pick another provider.
 

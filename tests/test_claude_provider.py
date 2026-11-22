@@ -199,6 +199,12 @@ class OwnCopies(Case):
                 self.assertIn("plugins/my-claude is your own copy", lines[0])
         self.assertTrue((self.home / "plugins/my-claude/plugin.yaml").exists())
 
+    def test_a_folder_name_cannot_forge_a_log_line(self):
+        self.add_plugin("x\n[hermes-init] ERROR: forged", PROVIDER)
+        lines = run_check(self.home, "on")[1]
+        self.assertEqual(len(lines), 1)
+        self.assertIn("plugins/x\\n[hermes-init] ERROR: forged is your own copy", lines[0])
+
     def test_other_plugins_and_our_symlink_are_silent(self):
         self.add_plugin("spotify", "spotify")
         (self.home / "plugins/empty").mkdir()

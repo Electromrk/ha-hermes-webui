@@ -1,5 +1,10 @@
-"""Static contracts of rootfs: the s6 graph, init rules, wrappers. Needs no Docker and no network."""
+"""Static contracts of rootfs: the s6 graph, init rules, wrappers. Needs no Docker and no network.
 
+HERMES_TEST_IMAGE=local/hermes_webui:<version>-amd64 adds a check of the wrappers' flag lists against the
+agent in the image, which needs Docker and no internet.
+"""
+
+import json
 from pathlib import Path
 import os
 import re
@@ -19,6 +24,12 @@ INIT = (ROOTFS / "etc/s6-overlay/scripts/hermes-init.sh").read_text(encoding="ut
 GATEWAY_RUN = (S6 / "hermes-gateway/run").read_text(encoding="utf-8")
 GATEWAY_FINISH = (S6 / "hermes-gateway/finish").read_text(encoding="utf-8")
 UPDATE_MESSAGE = "Updates are delivered as new app versions in Home Assistant."
+
+
+def wrapper_flag_lists(wrapper):
+    text = wrapper.read_text(encoding="utf-8")
+    return tuple(set(re.search(rf'^{name}="([^"]*)"$', text, re.M).group(1).split())
+                 for name in ("VALUE_FLAGS", "PLAIN_FLAGS"))
 
 
 def shell_files():
@@ -361,7 +372,17 @@ class Wrappers(unittest.TestCase):
 
     def test_update_is_blocked(self):
         for wrapper in self.WRAPPERS:
-            for arguments in (["update"], ["--quiet", "update"], ["update", "--force"]):
+            for arguments in (["update"], ["--quiet", "update"], ["update", "--force"], ["-p", "work", "update"],
+                              ["--profile", "work", "update"], ["--profile=work", "update"], ["-m", "x", "update"],
+                              ["--provider", "x", "update"], ["-t", "x", "update"], ["--resume", "x", "update"],
+                              ["--in", "./dir", "update"], ["--skills", "x", "update"], ["-c", "x", "update"],
+                              ["--", "update"], ["--yolo", "-p", "work", "--model", "x", "update", "--force"],
+                              # argparse reads a long flag by any prefix, so these take a value too.
+                              ["--mod", "x", "update"], ["--prov", "x", "update"], ["--resu", "x", "update"],
+                              ["--usag", "f", "update"], ["--sk", "x", "update"], ["--prof", "work", "update"],
+                              ["--re", "x", "update"],
+                              # A prefix of a flag without a value takes none; --tui is exact, not --tui-native.
+                              ["--yol", "update"], ["--ver", "update"], ["--tui", "update"], ["--mod=x", "update"]):
                 with self.subTest(wrapper=wrapper.name, arguments=arguments):
                     result = self.run_wrapper(wrapper, *arguments)
                     self.assertEqual(result.returncode, 1)
@@ -370,16 +391,47 @@ class Wrappers(unittest.TestCase):
 
     def test_everything_else_reaches_the_real_command_with_the_environment(self):
         for wrapper in self.WRAPPERS:
-            for arguments in (["model"], ["plugins", "update"], ["--version"], []):
+            # A flag's value is not the command: "-z update" is a one-word prompt, "-p update" a profile name.
+            for arguments in (["model"], ["plugins", "update"], ["--version"], [], ["-z", "update"], ["--oneshot", "update"],
+                              ["-p", "update", "model"], ["-c", "update"], ["chat", "update"], ["-p"],
+                              ["--one", "update"], ["--cont", "update"], ["--mod", "update"], ["--mod"]):
                 with self.subTest(wrapper=wrapper.name, arguments=arguments):
                     result = self.run_wrapper(wrapper, *arguments)
                     self.assertEqual(result.returncode, 0)
                     self.assertEqual(result.stdout.strip(), f"real:/config/hermes:/config/hermes:1:{' '.join(arguments)}")
 
+    def test_both_wrappers_carry_the_same_flag_lists(self):
+        lists = [wrapper_flag_lists(wrapper) for wrapper in self.WRAPPERS]
+        self.assertEqual(lists[0], lists[1])
+        self.assertTrue(lists[0][0] and lists[0][1])
+
     def test_profile_puts_the_wrappers_first(self):
         profile = (ROOTFS / "etc/profile.d/hermes.sh").read_text(encoding="utf-8")
         self.assertIn('PATH="/opt/hermes-app/bin:', profile)
         self.assertNotIn("/opt/data", profile)
+
+
+@unittest.skipUnless(os.environ.get("HERMES_TEST_IMAGE"), "opt-in: set HERMES_TEST_IMAGE to an app image")
+class WrapperFlagsMatchTheAgent(unittest.TestCase):
+    """The wrappers' long-flag lists are the agent's top-level flags, split by whether they take a value."""
+
+    def test_lists_match_the_agents_parser(self):
+        script = (
+            "import json, hermes_cli._parser as p\n"
+            "parser = p.build_top_level_parser()[0]\n"
+            "value, plain = set(), set()\n"
+            "for action in parser._actions:\n"
+            "    longs = [o for o in action.option_strings if o.startswith('--')]\n"
+            "    (plain if action.nargs == 0 else value).update(longs)\n"
+            "value |= {flag for flag, takes in p.PRE_ARGPARSE_INHERITED_FLAGS if takes and flag.startswith('--')}\n"
+            "print(json.dumps([sorted(value), sorted(plain), parser.allow_abbrev]))\n")
+        result = subprocess.run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "/opt/hermes/.venv/bin/python",
+                                 os.environ["HERMES_TEST_IMAGE"], "-I", "-c", script],
+                                text=True, capture_output=True, check=False, timeout=180)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        value, plain, allow_abbrev = json.loads(result.stdout)
+        self.assertTrue(allow_abbrev)
+        self.assertEqual(wrapper_flag_lists(Wrappers.WRAPPERS[0]), (set(value), set(plain)))
 
 
 if __name__ == "__main__":

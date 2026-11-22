@@ -367,7 +367,7 @@ sys.path.insert(0, {PLUGIN_DIR!r})
 from model_catalog import PICKER_ROUTES
 class Profile:
     fallback_models = PICKER_ROUTES
-live = ["claude-opus-5-5[1m]", "claude-fable-5-1[1m]", "claude-sonnet-5-5[1m]"]
+live = ["claude-opus-5-5[1m]", "claude-fable-5-2[1m]", "claude-sonnet-5-5[1m]"]
 rows = merge_profile_catalog("x", Profile, live)
 ordered, _sections, start = _picker_order(rows, "", None)
 print(ordered[start])
@@ -439,6 +439,8 @@ print(ordered[start])
             self.check("picker: Enter saves Sonnet and the provider", f"provider: {PROVIDER}" in config_text and "default: claude-sonnet-5-5[1m]" in config_text,
                        [line.strip() for line in config_text.splitlines() if line.strip().startswith(("provider:", "default:"))])
 
+            self.card_checks(run)
+
             output = run("claude auth logout >/dev/null 2>&1; echo rc=$?; ls -A /data/claude | grep -c credentials; find /data/claude -mindepth 1 -delete; echo rc=$?; ls -A /data/claude | wc -l").stdout.split()
             self.check("removal: claude auth logout removes the file", output[:2] == ["rc=0", "0"], output[:2])
             self.check("removal: the documented delete empties the folder", output[2:] == ["rc=0", "0"], output[2:])
@@ -449,6 +451,82 @@ print(ordered[start])
             # Its files are uid 10000, so a container removes them.
             docker("run", "--rm", "--network", "none", "--mount", f"type=bind,source={self.harness.state},target=/state",
                    "--entrypoint", "/bin/rm", self.harness.image, "-rf", "/state/offline", check=False)
+
+
+    def card_checks(self, run):
+        """CLAUDE.md §3 rule 4: the "Login with Claude Code" card must stay pending with a valid login on disk,
+        even when the user's config.yaml asks for adoption, and must not clear the Anthropic key from .env."""
+        run(f"printf '\\nANTHROPIC_API_KEY={CARD_KEY}\\n' >> /config/hermes/.env; "
+            "printf 'auth:\\n  adopt_external_logins: true\\n' >> /config/hermes/config.yaml")
+        # Positive control: with the gate patched open, the agent's reader finds the fake file. Without this,
+        # a pending card could just mean the reader looks elsewhere, and the check below would prove nothing.
+        control = run("cd /opt/hermes && HERMES_HOME=/config/hermes CLAUDE_CONFIG_DIR=/data/claude /opt/hermes/.venv/bin/python -", input_text=READER_CONTROL)
+        self.check("card: the reader finds the login when the gate is open (control)", "open: True" in control.stdout,
+                   control.stdout.strip() or control.stderr.strip()[-200:])
+        self.check("card: the reader returns nothing with the app's settings", "app: False" in control.stdout)
+        result = docker("exec", "--interactive", "--user", "hermes", "--env", "HOME=/tmp/hermes-home", OFFLINE, "/opt/hermes/.venv/bin/python", "-I", "-",
+                        input_text=CARD_DRIVER, check=False, timeout=180)
+        lines = result.stdout.splitlines()
+        print("  card:", " | ".join(lines) or result.stderr.strip()[-300:])
+        polls = [line for line in lines if line.startswith("poll:")]
+        self.check("card: the flow starts and stays pending over three polls", lines[:1] == ["start: 200 pending"] and polls == ["poll: 200 pending"] * 3,
+                   lines)
+        output = run("grep -c '^ANTHROPIC_API_KEY=' /config/hermes/.env; grep -c claude_code_linked /config/hermes/auth.json 2>/dev/null || true").stdout.split()
+        self.check("card: the Anthropic key stays in .env and nothing is linked", output[:1] == ["1"] and output[1:] in ([], ["0"]), output)
+        run("sed -i '/^ANTHROPIC_API_KEY=/d' /config/hermes/.env")
+
+
+# A valid-looking key that the card's link step would remove from .env.
+CARD_KEY = "harness-fake-card-key-7f3e"
+READER_CONTROL = r"""
+import agent.credential_sources as sources
+from agent.anthropic_credentials import read_claude_code_credentials
+print("app:", bool(read_claude_code_credentials()))
+sources.adopt_external_logins_enabled = lambda: True
+print("open:", bool(read_claude_code_credentials()))
+"""
+CARD_DRIVER = r"""
+import http.cookiejar, json, re, time, urllib.error, urllib.request
+BASE = "http://127.0.0.1:8787"
+# The CSRF token belongs to the session cookie, as in a browser.
+OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+def call(method, path, body=None, extra=None):
+    headers = {"X-Remote-User-Id": "harness", **(extra or {})}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
+    try:
+        with OPENER.open(request, timeout=20) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as error:
+        return error.code, error.read()
+
+page = b""
+for _attempt in range(120):
+    try:
+        status, page = call("GET", "/")
+        if status == 200:
+            break
+    except OSError:
+        pass
+    time.sleep(0.5)
+match = re.search(rb'csrfToken:"([^"]+)"', page)
+post = {"Origin": BASE, "X-CSRF-Token": match.group(1).decode() if match else ""}
+status, raw = call("POST", "/api/onboarding/oauth/start", {"provider": "claude-code"}, post)
+start = json.loads(raw or b"{}")
+print("start:", status, start.get("status") or start)
+flow = start.get("flow_id")
+for _poll in range(3):
+    time.sleep(6)
+    status, raw = call("GET", f"/api/onboarding/oauth/poll?flow_id={flow}")
+    print("poll:", status, json.loads(raw or b"{}").get("status"))
+if flow:
+    status, raw = call("POST", "/api/onboarding/oauth/cancel", {"flow_id": flow, "provider": "claude-code"}, post)
+    print("cancel:", status, json.loads(raw or b"{}").get("status"))
+"""
 
 
 SECTIONS = ["switch_on", "terminal", "plugin_contract", "logged_out_chat", "conflicts", "switch_off", "own_copy", "payload", "fake_login"]

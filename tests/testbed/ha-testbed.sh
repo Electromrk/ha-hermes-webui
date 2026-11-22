@@ -127,7 +127,8 @@ App (${APP_SLUG}; override with HERMES_TESTBED_APP):
   install                Reload the store and install the app (local build)
   rebuild                Reload the store and rebuild the app (--force)
   update                 Reload the store and update the app to a new version in its folder
-  start | stop           Start or stop the app
+  refresh                update when the folder holds a new version, otherwise rebuild
+  start | stop           Start or stop the app; waits while a Supervisor job, such as a build, holds it
   logs [ha-cli flags]    Show the app log
   backup [name]          Create a partial backup of the app and report its contents
   backup-report <slug>   Report the contents of an existing backup
@@ -537,14 +538,14 @@ cmd_install() {
   require_running
   log "Reloading the store, which also updates its remote repositories."
   ha_helper store-reload
-  ha_cli apps install "${APP_SLUG}"
+  app_build_job install
 }
 
 cmd_rebuild() {
   require_running
   log "Reloading the store, which also updates its remote repositories."
   ha_helper store-reload
-  ha_cli apps rebuild --force "${APP_SLUG}"
+  app_build_job rebuild --force
 }
 
 # rebuild refuses when config.yaml carries a new version, so a changed version needs this.
@@ -552,7 +553,48 @@ cmd_update() {
   require_running
   log "Reloading the store, which also updates its remote repositories."
   ha_helper store-reload
-  ha_cli apps update "${APP_SLUG}"
+  app_build_job update
+}
+
+# The version in the app's folder, which a store reload offers as version_latest. On a device that is
+# the last commit, because pi-deploy copies that and not the working tree.
+folder_version() {
+  local pattern='s/^version: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p'
+  if is_pi; then
+    git -C "${REPO_ROOT}" show HEAD:hermes_webui/config.yaml | sed -n "${pattern}"
+  else
+    sed -n "${pattern}" "${REPO_ROOT}/hermes_webui/config.yaml"
+  fi
+}
+
+# How the Supervisor gets from the installed version to the folder's: it refuses a rebuild for a newer
+# version, and an update is also the path users take, so a newer version is updated and the same version
+# rebuilt. It moves to an older version neither way, so that stops here.
+refresh_action() {
+  local installed="$1" folder="$2"
+  [[ -n "${folder}" ]] || die "No version found in hermes_webui/config.yaml."
+  if [[ -z "${installed}" || "${installed}" == "${folder}" ]]; then
+    echo rebuild
+  elif [[ "$(printf '%s\n%s\n' "${installed}" "${folder}" | sort -V | tail -n 1)" == "${folder}" ]]; then
+    echo update
+  else
+    die "Installed ${installed} is newer than the folder's ${folder}, and the Supervisor doesn't go back. Restore a backup, or uninstall first."
+  fi
+}
+
+cmd_refresh() {
+  require_running
+  local installed folder action
+  installed="$(app_version_and_state)"
+  installed="${installed%% *}"
+  folder="$(folder_version)"
+  action="$(refresh_action "${installed}" "${folder}")" || exit 1
+  if [[ "${action}" == update ]]; then
+    log "Installed ${installed}, folder ${folder}: updating."
+    cmd_update
+  else
+    cmd_rebuild
+  fi
 }
 
 cmd_backup() {
@@ -788,52 +830,114 @@ print(data.get("version") or "", data.get("state") or "")
 ' 2>/dev/null || true
 }
 
-# Installs the app, or rebuilds it when it's already there, so that a second run tests the newly
-# copied files and not the old image. A build on a device can outlast the ha CLI's own time limit
-# (1 h for install, 10 min for rebuild), while the Supervisor carries on.
-cmd_pi_install() {
-  is_pi || die "pi-install needs HERMES_TESTBED_TARGET=pi."
-  require_running
-  log "Reloading the store."
-  ha_helper store-reload
-  local image_before image_now action cli_limit cli_started rc=0 state="" must_change=""
+# Whether the Supervisor still runs a job for the app. Such a job holds the app's job group, and until it
+# ends the Supervisor refuses every other command for the app with "Another job is running for job group".
+# Checked on Supervisor 2026.11.0: during a rebuild the list holds app_manager_rebuild with the app's slug
+# as reference and done false, and the job is gone once it has finished. A list that can't be read counts
+# as no job, because the callers have other signals as well.
+app_job_running() {
+  ha_cli jobs info --raw-json 2>/dev/null | python3 -I -c '
+import json, sys
+
+def running(jobs):
+    return any((job.get("reference") == sys.argv[1] and job.get("done") is not True)
+               or running(job.get("child_jobs") or []) for job in jobs)
+
+try:
+    jobs = json.load(sys.stdin)["data"]["jobs"]
+except (ValueError, KeyError, TypeError):
+    sys.exit(1)
+sys.exit(0 if running(jobs) else 1)
+' "${APP_SLUG}"
+}
+
+# Runs install, update or rebuild and waits until the Supervisor has finished it. A build on a device can
+# outlast the ha CLI's own time limit (1 h for install and update, 10 min for rebuild), while the
+# Supervisor carries on. On the test Pi on 2026-11-20 its rebuild job ran for 5 more minutes after the new
+# image had appeared, refused every other command for the app meanwhile, and then started the app again,
+# because it had been running. So this waits for the job, not only for the image.
+app_build_job() {
+  local cli_limit=3600 image_before image_now rc=0 state="" must_change=""
+  [[ "$1" != rebuild ]] || cli_limit=600
   image_before="$(app_image_id)"
-  if [[ -n "${image_before}" ]]; then
-    action=(rebuild --force)
-    cli_limit=600
-  else
-    action=(install)
-    cli_limit=3600
-  fi
+  log "Running $1 for ${APP_SLUG}. The Supervisor builds it, which takes a while on a device (up to ${TIMEOUT_BUILD}s)."
   local started="${SECONDS}" deadline=$((SECONDS + TIMEOUT_BUILD))
-  log "Running ${action[0]} for ${APP_SLUG}. The device builds it, so this takes a while (up to ${TIMEOUT_BUILD}s)."
-  cli_started="${SECONDS}"
-  ha_cli apps "${action[@]}" "${APP_SLUG}" || rc=$?
+  ha_cli apps "$@" "${APP_SLUG}" || rc=$?
   if ((rc != 0)); then
-    # An answer well before the CLI's time limit is the Supervisor's own refusal or a failed build.
-    ((SECONDS - cli_started >= cli_limit - 60)) ||
-      die "The ${action[0]} failed after $((SECONDS - cli_started))s, before the ha CLI's time limit. See the message above."
-    warn "The ha CLI gave up after its time limit. Waiting for the Supervisor's build."
-    # Without the CLI's answer, only a new image shows that the build has finished.
+    # The app's job still running, or an answer at the CLI's time limit, means that the CLI gave up. Anything
+    # else is the Supervisor's own refusal or a failed build.
+    app_job_running || ((SECONDS - started >= cli_limit - 60)) ||
+      die "The $1 failed after $((SECONDS - started))s, before the ha CLI's time limit. See the message above."
+    warn "The ha CLI gave up after its time limit. Waiting for the Supervisor to finish the $1."
+    # Without the CLI's answer, only a new image shows that the build has worked.
     must_change=1
   fi
   while ((SECONDS < deadline)); do
-    state="$(app_version_and_state)"
-    image_now="$(app_image_id)"
-    if [[ ("${state}" == *" started" || "${state}" == *" stopped") && -n "${image_now}" ]] &&
-      [[ -z "${must_change}" || "${image_now}" != "${image_before}" ]]; then
-      break
+    if ! app_job_running; then
+      state="$(app_version_and_state)"
+      image_now="$(app_image_id)"
+      if [[ ("${state}" == *" started" || "${state}" == *" stopped") && -n "${image_now}" ]] &&
+        [[ -z "${must_change}" || "${image_now}" != "${image_before}" ]]; then
+        break
+      fi
     fi
     state=""
     sleep 15
   done
-  [[ -n "${state}" ]] || die "The ${action[0]} didn't finish within ${TIMEOUT_BUILD}s."
+  [[ -n "${state}" ]] || die "The $1 didn't finish within ${TIMEOUT_BUILD}s."
   if [[ "${image_now}" == "${image_before}" ]]; then
     log "The image is unchanged, because the app's files are the same as at the last build."
   else
     log "The image is new."
   fi
-  log "Finished ${action[0]} after $((SECONDS - started))s (measured): ${state}"
+  log "Finished $1 after $((SECONDS - started))s (measured): ${state}"
+}
+
+# Starts or stops the app. While another job holds the app, such as a build that outlasted the ha CLI, the
+# Supervisor refuses with "Another job is running for job group ...". That means busy, not failed, so this
+# waits for the job, up to the build's own limit, and only then reports the Supervisor's answer.
+app_command() {
+  local deadline=$((SECONDS + TIMEOUT_BUILD)) output="" rc=0 told=""
+  while true; do
+    if ! app_job_running || ((SECONDS >= deadline)); then
+      rc=0
+      output="$(ha_cli apps "$1" "${APP_SLUG}" 2>&1)" || rc=$?
+      if ((rc == 0 || SECONDS >= deadline)) || [[ "${output}" != *"Another job is running for job group"* ]]; then
+        break
+      fi
+    fi
+    [[ -n "${told}" ]] || log "The Supervisor is still busy with ${APP_SLUG}. Waiting for it (up to ${TIMEOUT_BUILD}s)."
+    told=1
+    sleep 15
+  done
+  if ((rc == 0)); then
+    printf '%s\n' "${output}"
+  else
+    printf '%s\n' "${output}" >&2
+  fi
+  return "${rc}"
+}
+
+# Installs the app, or rebuilds it when it's already there, so that a second run tests the newly
+# copied files and not the old image; a new version is updated instead.
+cmd_pi_install() {
+  is_pi || die "pi-install needs HERMES_TESTBED_TARGET=pi."
+  require_running
+  log "Reloading the store."
+  ha_helper store-reload
+  local installed refresh
+  if [[ -z "$(app_image_id)" ]]; then
+    app_build_job install
+    return
+  fi
+  installed="$(app_version_and_state)"
+  # A newer version in the folder needs an update: the Supervisor refuses a rebuild then.
+  refresh="$(refresh_action "${installed%% *}" "$(folder_version)")" || exit 1
+  if [[ "${refresh}" == update ]]; then
+    app_build_job update
+  else
+    app_build_job rebuild --force
+  fi
 }
 
 ha_helper() {
@@ -1308,13 +1412,10 @@ main() {
     install) cmd_install ;;
     rebuild) cmd_rebuild ;;
     update) cmd_update ;;
-    start)
+    refresh) cmd_refresh ;;
+    start | stop)
       require_running
-      ha_cli apps start "${APP_SLUG}"
-      ;;
-    stop)
-      require_running
-      ha_cli apps stop "${APP_SLUG}"
+      app_command "${command}"
       ;;
     logs)
       require_running

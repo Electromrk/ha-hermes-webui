@@ -42,6 +42,7 @@ All four run from the image under test, which has nginx and Python, so the harne
 |---|---|
 | `harness.py` | `up`, `restart`, `status`, `logs`, `payload`, `exec`, `down`. `restart` recreates the app on the same data, as every Supervisor stop and start does. `--option NAME=JSON` sets options |
 | `smoke.py` | The smoke test of `CLAUDE.md` section 6. Every check prints PASS or FAIL with what it measured. `--only SECTION` runs parts on a running harness, `--keep` leaves it running |
+| `migration.py` | The migration test of `CLAUDE.md` section 6: `--old` (the previous version's image) makes data with the stub model (two sessions, a cron job, a user's files, a hand-made `.env` key, Claude on), then the new image starts on the same mounts and must keep every session, file, mode and setting, go on with an old session and fire the cron job. About 6 minutes |
 | `backup_payload.py` | What a Supervisor backup would contain, with `backup_exclude` applied the Supervisor's way to host-style paths |
 | `webui_client.py` | A small webui client: JSON, SSE, one chat turn, one terminal session. It also works through real Ingress |
 | `stubs/` | The HA API stub and the model stub |

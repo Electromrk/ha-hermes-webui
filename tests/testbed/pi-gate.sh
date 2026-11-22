@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# The checks of tests/gate.sh that need a real device, run on the enrolled test SSD over SSH.
+# The checks of tests/gate.sh that need a real device, run on the enrolled test Pi over SSH.
 #
 #   tests/testbed/ha-testbed.sh pi-enroll <host> --test-ssd-is-in     # once, see the README
 #   tests/testbed/pi-gate.sh
@@ -54,7 +54,8 @@ step() {
   return "${rc}"
 }
 
-# The Supervisor refuses this for a while after the device has started.
+# The Supervisor refuses this for a while after the device has started. A job that still holds the app,
+# such as a build that outlasted the ha CLI, is waited for by start itself, up to the build's limit.
 start_app() {
   local deadline=$((SECONDS + 300))
   while ((SECONDS < deadline)); do

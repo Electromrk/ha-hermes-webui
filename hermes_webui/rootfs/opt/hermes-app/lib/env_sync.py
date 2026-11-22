@@ -399,6 +399,8 @@ def cmd_claude_check(args):
         emit("WARNING", "config.yaml still selects the Claude provider, but claude_subscription is off. "
                         "Those requests fail until you turn the option on or pick another provider.")
     for name in own_plugin_copies(args.home):
+        # Escaped, so a folder name with a line break can't forge a log line of its own.
+        name = name.encode("unicode_escape").decode("ascii")
         emit("WARNING", f"plugins/{name} is your own copy of the Claude plugin. claude_subscription doesn't "
                         "control it, and it competes with the tested copy in the image. Remove it to go back to that.")
     return 0

@@ -31,7 +31,8 @@ long-lived token are in `tests/testbed/.local/credentials.json`.
 | `install` | `ha store reload`, then `ha apps install` |
 | `rebuild` | `ha store reload`, then `ha apps rebuild --force`; the Supervisor refuses this when `config.yaml` has a new version |
 | `update` | `ha store reload`, then `ha apps update`; for a new version in the app's folder |
-| `start`, `stop` | `ha apps start`, `ha apps stop` |
+| `refresh` | `update` when the app's folder holds a new version, otherwise `rebuild`; `tests/gate.sh` uses it |
+| `start`, `stop` | `ha apps start`, `ha apps stop`; they wait while a Supervisor job still holds the app, see "Builds that outlast the ha CLI" |
 | `logs [flags]` | `ha apps logs` |
 | `backup [name]` | Partial backup of the app, then `backup-report` |
 | `backup-report <slug>` | File sizes in a backup, with and without `image.tar` |
@@ -130,6 +131,25 @@ reports an error, while the Supervisor finishes the reload in the background.
 `install`, `rebuild` and `update` avoid this by calling the same API through Core's WebSocket
 API with a 300-second timeout.
 
+### Builds that outlast the ha CLI
+
+The ha CLI gives up after its own time limit, 10 minutes for a rebuild and 1 hour for an install or
+update, while the Supervisor carries on with its job. Until that job ends, the Supervisor refuses every
+other command for the app with `Another job is running for job group app_local_hermes_webui`. On the test
+Pi (SD card, 2026-11-20) a rebuild job ran for about 5 more minutes after the new image had appeared, and
+then started the app again, because it had been running.
+
+- `install`, `rebuild`, `update`, `refresh` and `pi-install` therefore wait, after the CLI has given up,
+  until `ha jobs info` lists no unfinished job for the app, and then for a new image and a state of
+  `started` or `stopped`, up to 2 hours in all. A refusal or a failed build before the CLI's limit still
+  stops them at once.
+- `start` and `stop` wait for such a job too, and take that refusal as busy rather than failed, up to the
+  same limit.
+
+On Supervisor 2026.11.0 a running rebuild is listed as `app_manager_rebuild` with the app's slug as
+`reference` and `done: false` (checked in the testbed and in its source). Finished install, update and
+rebuild jobs are removed from the list; backup jobs stay listed as done for a while.
+
 ### App discovery
 
 The Supervisor treats the repo as one store folder and looks for `config.*` at any
@@ -173,7 +193,7 @@ python3 tests/testbed/cron_check.py --reset
 
 ## Testing on a real device
 
-`HERMES_TESTBED_TARGET=pi` points the same scripts at a separate test SSD with a fresh Home Assistant OS, over its debug SSH on port 22222. Production stays untouched, because it never gets the key.
+`HERMES_TESTBED_TARGET=pi` points the same scripts at a separate test device with a fresh Home Assistant OS (since 2026-11-15 a Pi 5 of its own on Wi-Fi, before that a test SSD in the production Pi), over its debug SSH on port 22222. Production stays untouched, because it never gets the key.
 
 Everything that identifies the device stays outside the repository, because the repository is mounted into the privileged testbed:
 
@@ -187,27 +207,27 @@ Everything that identifies the device stays outside the repository, because the 
 
 **Safeguards:**
 
-- `pi-enroll` needs `--test-ssd-is-in`. It refuses a system that already has a Core user, an installed app or a backup, or that isn't `aarch64`.
+- `pi-enroll` needs `--test-ssd-is-in`, which confirms that the address belongs to the test device (the name dates from the test SSD). It refuses a system that already has a Core user, an installed app or a backup, or that isn't `aarch64`.
 - It writes a random marker to `/mnt/data/hermes-test-marker` and pins the host key. The key is kept only after every check has passed, so a refused system leaves nothing pinned. From then on, every command checks both in the same connection and runs nothing otherwise.
 - `ssh` runs without this machine's `ssh_config` and global known hosts, and the safeguards ignore inherited environment variables.
 - `down` and `reset` are refused. `pi-deploy` copies the last commit and warns if the working tree differs.
-- `pi-install` rebuilds the app when it's already installed, so a second run tests the newly copied files. It stops at once when the Supervisor refuses or the build fails before the ha CLI's own time limit.
+- `pi-install` rebuilds the app when it's already installed, so a second run tests the newly copied files, and updates it when the copied folder holds a newer version. It refuses an older version, which the Supervisor can't go back to. It stops at once when the Supervisor refuses or the build fails before the ha CLI's own time limit. When the CLI gives up first, it waits until the Supervisor's job has ended, not only for the new image (see "Builds that outlast the ha CLI").
 
 **If the stick was ever in your real system while it started:** Home Assistant OS has then copied the key, and root SSH on port 22222 stays open there after the stick is out. To close it, put a `CONFIG` stick without `authorized_keys` into the real system and restart it once, which removes the key (read in the Home Assistant OS sources, not tried). Then delete `~/.config/hermes-pi`, so that nothing is pinned to the wrong device.
 
-**Steps, once the test SSD and the `CONFIG` stick are in the device and it has started:**
+**Steps, once the test device has started with its `CONFIG` data (on a stick, or on the boot partition of a prepared image):**
 
 ```bash
 export HERMES_TESTBED_TARGET=pi
 tests/testbed/ha-testbed.sh pi-enroll <address> --test-ssd-is-in
-# Take the stick out, and keep it away from production.
+# If a stick was used, take it out and keep it away from production.
 tests/testbed/ha-testbed.sh ha host reboot    # Confirms the key survives without the stick.
 tests/testbed/pi-gate.sh
 ```
 
 `pi-gate.sh` onboards the device, reads its facts, copies and builds the app, resets it to a fresh install (signing a hand-made Claude login out first), measures the build, the RAM (idle, during a chat with the stub model, and after it), a backup with its downtime, and a restore, and runs `ingress_check.py`, `claude_check.py` and `cron_check.py`. A real chat with a real model stays a manual step, because it needs the user's own login.
 
-**When the SSD is reused,** delete `~/.config/hermes-pi` after installing it fresh.
+**When the test device is installed fresh,** delete `~/.config/hermes-pi` after installing it fresh.
 
-**Checked without a device:** `tests/test_pi_target.py` tests the safeguards with stand-ins for `ssh` and `docker`, and `pi-gate.sh` passed against the local testbed through a stand-in for `ssh`. Real SSH to a real HAOS, its paths and its shell are first tried on the device.
+**Checked without a device:** `tests/test_pi_target.py` tests the safeguards with stand-ins for `ssh` and `docker`, and replays the build of 2026-11-20 with a stand-in Supervisor whose job outlasts the ha CLI; `pi-gate.sh` passed against the local testbed through a stand-in for `ssh`. Real SSH to a real HAOS, its paths and its shell are first tried on the device.
 

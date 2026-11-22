@@ -4,7 +4,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 import json
 import os
+import socketserver
 import stat
+import struct
 import subprocess
 import tempfile
 import threading
@@ -40,6 +42,112 @@ case "$*" in
 esac
 """
 FAKE_UNAME = '#!/bin/sh\necho "${FAKE_MACHINE:-aarch64}"\n'
+# docker on the device, with a Supervisor whose job for the app outlasts the ha CLI, as on the test Pi on 2026-11-20:
+# the rebuild stops the app, the new image appears at once, the job goes on, and at its end the Supervisor starts
+# the app again, because it had been running. Time passes by ha calls. FAKE_JOB_LISTED=0 hides the job from
+# "ha jobs info", so that only the Supervisor's refusals show it.
+FAKE_SUPERVISOR = r"""#!/usr/bin/env python3
+import json, os, sys
+
+path = os.environ["FAKE_SUPERVISOR"]
+with open(path) as handle:
+    sup = json.load(handle)
+slug = "local_hermes_webui"
+busy = "Error: Another job is running for job group app_local_hermes_webui"
+arguments = sys.argv[1:]
+out, err, code = "", "", 0
+if arguments[:3] == ["exec", "hassio_cli", "ha"]:
+    call = " ".join(arguments[3:])
+    sup["calls"].append(call)
+    if sup["job_left"] > 0:
+        sup["job_left"] -= 1
+        if sup["job_left"] == 0:
+            sup["state"] = sup["state_after_job"]
+    running = sup["job_left"] > 0
+    if call == f"apps info {slug} --raw-json":
+        out = json.dumps({"result": "ok", "data": {"version": sup["version"], "state": sup["state"]}})
+    elif call == "jobs info --raw-json":
+        # A finished backup job of the app stays listed, as on the device.
+        jobs = [{"name": "backup_manager_partial_backup", "reference": "8e7e294e", "done": True, "child_jobs": [
+            {"name": "backup_app_save", "reference": slug, "done": True, "child_jobs": []}]}]
+        if running and os.environ.get("FAKE_JOB_LISTED", "1") == "1":
+            jobs.insert(0, {"name": "app_manager_rebuild", "reference": slug, "done": False, "child_jobs": [
+                {"name": "app_rebuild", "reference": slug, "done": False, "child_jobs": []}]})
+        out = json.dumps({"result": "ok", "data": {"ignore_conditions": [], "jobs": jobs}})
+    elif call == f"apps rebuild --force {slug}":
+        if os.environ.get("FAKE_REBUILD") == "refuse":
+            err, code = "Error: Can't rebuild an image-based app", 1
+        else:
+            sup.update(state_after_job=sup["state"], state="stopped", image="sha256:new", job_left=int(os.environ["FAKE_JOB_CALLS"]))
+            err = ('Error: Post "http://supervisor/addons/local_hermes_webui/rebuild": '
+                   "context deadline exceeded (Client.Timeout exceeded while awaiting headers)")
+            code = 1
+    elif call in (f"apps start {slug}", f"apps stop {slug}"):
+        if running:
+            sup["refused"].append(call)
+            err, code = busy, 1
+        elif os.environ.get("FAKE_START") == "fail":
+            err, code = "Error: App local_hermes_webui can't start", 1
+        else:
+            sup["state"] = "started" if call.split()[1] == "start" else "stopped"
+            out = "Command completed successfully."
+    else:
+        err, code = f"unexpected ha call: {call}", 1
+elif arguments[:2] == ["image", "ls"]:
+    out = sup["image"]
+else:
+    err, code = f"unexpected docker call: {' '.join(arguments)}", 1
+with open(path, "w") as handle:
+    json.dump(sup, handle)
+if out:
+    print(out)
+if err:
+    print(err, file=sys.stderr)
+sys.exit(code)
+"""
+# The waits here are about order, not time.
+FAKE_SLEEP = "#!/bin/sh\nexit 0\n"
+
+
+class FakeCoreSocket(socketserver.BaseRequestHandler):
+    """Core's WebSocket API, just enough for the store reload before a build."""
+
+    def handle(self):
+        self.buffer = b""
+        while b"\r\n\r\n" not in self.buffer:
+            chunk = self.request.recv(4096)
+            if not chunk:
+                return
+            self.buffer += chunk
+        self.buffer = self.buffer.split(b"\r\n\r\n", 1)[1]
+        self.request.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+        self.send({"type": "auth_required"})
+        if self.receive().get("type") != "auth":
+            return
+        self.send({"type": "auth_ok"})
+        message = self.receive()
+        self.send({"id": message["id"], "type": "result", "success": True, "result": {}})
+
+    def read(self, count):
+        while len(self.buffer) < count:
+            chunk = self.request.recv(65536)
+            if not chunk:
+                raise ConnectionError
+            self.buffer += chunk
+        data, self.buffer = self.buffer[:count], self.buffer[count:]
+        return data
+
+    def send(self, message):
+        payload = json.dumps(message).encode()
+        self.request.sendall(bytes([0x81, len(payload)]) + payload)
+
+    def receive(self):
+        _first, second = self.read(2)
+        length = second & 0x7F
+        if length == 126:
+            length = struct.unpack("!H", self.read(2))[0]
+        mask = self.read(4)
+        return json.loads(bytes(byte ^ mask[index % 4] for index, byte in enumerate(self.read(length))))
 
 
 class Core(BaseHTTPRequestHandler):
@@ -281,6 +389,95 @@ class Enrolment(Case):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Already enrolled", result.stderr)
         self.assertEqual((self.data / "hermes-test-marker").read_text(), before)
+
+
+class BuildOutlastsTheCli(Case):
+    """The rebuild on the test Pi on 2026-11-20: the ha CLI gave up after 10 minutes, the new image was there while the app was
+    stopped, and pi-install went on although the Supervisor's job still held the app. Then start was refused with "Another job
+    is running" for 300 s, and gave up 5 s before the Supervisor finished and started the app itself."""
+
+    def setUp(self):
+        super().setUp()
+        self.enroll_state()
+        server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), FakeCoreSocket)
+        server.daemon_threads = True
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        (self.config / "target.env").write_text(
+            f"HERMES_PI_HOST=test-device\nHERMES_PI_URL=http://127.0.0.1:{server.server_address[1]}\nHERMES_PI_MARKER_ID={MARKER}\n")
+        local = self.config / "local"
+        local.mkdir(mode=0o700)
+        (local / ".gitignore").write_text("*\n")
+        (local / "credentials.json").write_text(json.dumps({"long_lived_token": "fake-token"}))
+        bin_dir = self.base / "bin"
+        for name, text in (("docker", FAKE_SUPERVISOR), ("sleep", FAKE_SLEEP)):
+            (bin_dir / name).write_text(text)
+            (bin_dir / name).chmod(0o755)
+        # pi-install rebuilds when the device holds the version of the last commit, as on 2026-11-20.
+        committed = subprocess.run(["git", "-C", str(ROOT), "show", "HEAD:hermes_webui/config.yaml"],
+                                   text=True, capture_output=True, check=True).stdout
+        version = next(line.split(":", 1)[1].strip().strip('"') for line in committed.splitlines() if line.startswith("version:"))
+        self.state_file = self.base / "supervisor.json"
+        self.write_supervisor(version=version, state="started", image="sha256:old", job_left=0, state_after_job="started")
+        self.environment.update(FAKE_SUPERVISOR=str(self.state_file), FAKE_JOB_CALLS="6", HERMES_TESTBED_TIMEOUT_BUILD="60")
+
+    def write_supervisor(self, **fields):
+        self.state_file.write_text(json.dumps({"calls": [], "refused": [], **fields}))
+
+    def supervisor(self):
+        return json.loads(self.state_file.read_text())
+
+    def test_install_waits_until_the_supervisor_has_finished_its_job(self):
+        result = self.run_script("pi-install")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("gave up after its time limit", result.stderr)
+        self.assertIn("The image is new.", result.stdout)
+        sup = self.supervisor()
+        self.assertEqual(sup["job_left"], 0, "pi-install returned while the Supervisor's job still held the app")
+        self.assertTrue(result.stdout.rstrip().endswith(" started"), result.stdout)
+        self.assertNotIn("apps start local_hermes_webui", sup["calls"], "the Supervisor starts the app itself")
+        # What pi-gate.sh does next.
+        result = self.run_script("start")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.supervisor()["refused"], [])
+
+    def test_start_takes_another_job_as_busy_and_waits_for_it(self):
+        # The new image is there and the app stopped, while the job goes on unseen in the job list.
+        self.write_supervisor(version="0.1.1", state="stopped", image="sha256:new", job_left=8, state_after_job="started")
+        result = self.run_script("start", FAKE_JOB_LISTED="0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        sup = self.supervisor()
+        self.assertGreaterEqual(len(sup["refused"]), 2, sup["calls"])
+        self.assertEqual(sup["job_left"], 0)
+        self.assertEqual(sup["state"], "started")
+        self.assertIn("still busy", result.stdout)
+
+    def test_start_waits_for_a_listed_job_before_it_asks(self):
+        self.write_supervisor(version="0.1.1", state="stopped", image="sha256:new", job_left=5, state_after_job="started")
+        result = self.run_script("start")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.supervisor()["refused"], [])
+        self.assertEqual(self.supervisor()["state"], "started")
+
+    def test_start_stops_waiting_at_the_build_limit(self):
+        self.write_supervisor(version="0.1.1", state="stopped", image="sha256:new", job_left=10**9, state_after_job="started")
+        result = self.run_script("start", FAKE_JOB_LISTED="0", HERMES_TESTBED_TIMEOUT_BUILD="2")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Another job is running", result.stderr)
+
+    def test_another_refusal_of_start_is_not_retried(self):
+        self.write_supervisor(version="0.1.1", state="stopped", image="sha256:old", job_left=0, state_after_job="stopped")
+        result = self.run_script("start", FAKE_START="fail")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("can't start", result.stderr)
+        self.assertEqual(self.supervisor()["calls"].count("apps start local_hermes_webui"), 1)
+
+    def test_a_refused_rebuild_still_stops_at_once(self):
+        result = self.run_script("pi-install", FAKE_REBUILD="refuse")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("before the ha CLI's time limit", result.stderr)
+        self.assertNotIn("Waiting", result.stderr)
 
 
 if __name__ == "__main__":

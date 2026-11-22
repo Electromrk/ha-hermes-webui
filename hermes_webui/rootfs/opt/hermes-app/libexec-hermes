@@ -1,16 +1,40 @@
 #!/bin/sh
 # Installed as /opt/hermes/libexec/hermes, because the agent prepends that folder to PATH. The
 # upstream launcher is hermes.real next to it.
-for argument in "$@"; do
-  case "$argument" in
-    -*) ;;
-    update)
-      echo "Updates are delivered as new app versions in Home Assistant." >&2
-      exit 1
-      ;;
-    *) break ;;
-  esac
-done
+# The first word after the top-level flags, as the agent's argparse reads it (hermes_cli/_parser.py):
+# flags that take a value skip that value too, "--" ends the flags, and "--flag=value" is one word.
+# -p/--profile is read before argparse. argparse also accepts a long flag by any prefix (--mod for
+# --model): an exact name wins, a prefix that also fits a flag without a value takes none (that flag,
+# or argparse refuses the ambiguity), and any other prefix of a value flag takes a value.
+# Keep both lists in step with the agent at each re-pin; tests/test_runtime_files.py checks them.
+VALUE_FLAGS="--profile --oneshot --model --provider --reasoning --toolsets --resume --skills --usage-file --in --continue"
+PLAIN_FLAGS="--help --version --no-restore-cwd --worktree --accept-hooks --yolo --pass-session-id --checkpoints --ignore-user-config --ignore-rules --safe-mode --tui --native --tui-native --cli --dev"
+takes_value() {
+  for flag in $VALUE_FLAGS; do [ "$1" = "$flag" ] && return 0; done
+  for flag in $PLAIN_FLAGS; do [ "$1" = "$flag" ] && return 1; done
+  for flag in $PLAIN_FLAGS; do case "$flag" in "$1"*) return 1 ;; esac; done
+  for flag in $VALUE_FLAGS; do case "$flag" in "$1"*) return 0 ;; esac; done
+  return 1
+}
+command_word() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --) shift; break ;;
+      -p|-z|-m|-t|-r|-s|-c)
+        if [ "$#" -gt 1 ]; then shift 2; else shift; fi ;;
+      --*=*) shift ;;
+      --*)
+        if takes_value "$1" && [ "$#" -gt 1 ]; then shift 2; else shift; fi ;;
+      -*) shift ;;
+      *) break ;;
+    esac
+  done
+  printf '%s' "${1-}"
+}
+if [ "$(command_word "$@")" = update ]; then
+  echo "Updates are delivered as new app versions in Home Assistant." >&2
+  exit 1
+fi
 # The webui terminal passes only an allowlist of variables, so these do not reach this shell.
 export HERMES_HOME="${HERMES_HOME:-/config/hermes}"
 export HERMES_WRITE_SAFE_ROOT="${HERMES_WRITE_SAFE_ROOT:-/config/hermes}"

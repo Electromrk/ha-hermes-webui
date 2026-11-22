@@ -1,6 +1,6 @@
 """nginx: static contracts always, plus an opt-in run against real nginx.
 
-Opt-in with HERMES_NGINX_TEST_IMAGE=local/hermes_webui:0.1.0-amd64. That part needs Docker, no internet.
+Opt-in with HERMES_NGINX_TEST_IMAGE=local/hermes_webui:<version>-amd64. That part needs Docker, no internet.
 It renders the two parts hermes-init writes, then checks /health and the source-address rules with a
 fake webui behind nginx. tests/harness/smoke.py covers the same rules through the whole image.
 """
@@ -90,10 +90,30 @@ class StaticContracts(unittest.TestCase):
                      "/API/Updates/Apply", "/api/updates/apply;x", "/api/updates/apply/"):
             with self.subTest(path=path):
                 self.assertTrue(any(pattern.search(path) for pattern in patterns), path)
-        for path in ("/api/updates/check", "/api/updates/summary", "/api/health/agent", "/api/gateway/status",
+        for path in ("/api/updates/summary", "/api/updates/checks", "/api/health/agent", "/api/gateway/status",
                      "/api/extensions/config", "/api/shutdownx"):
             with self.subTest(path=path):
                 self.assertFalse(any(pattern.search(path) for pattern in patterns), path)
+
+    def test_the_update_check_answers_disabled_for_every_method(self):
+        # The webui's "Check now" button posts force=true, which bypasses check_for_updates.
+        block = re.search(r'location ~\* "\^/api/updates/check\(/\|;\|\$\)" \{(.*?)\n        \}', CONFIG, re.S)
+        self.assertIsNotNone(block)
+        self.assertIn("return 200 '{\"disabled\":true}';", block.group(1))
+        self.assertNotIn("limit_except", block.group(1))
+        pattern = re.compile(r"^/api/updates/check(/|;|$)", re.I)
+        for path in ("/api/updates/check", "/API/Updates/Check", "/api/updates/check;x", "/api/updates/check/"):
+            with self.subTest(path=path):
+                self.assertRegex(path, pattern)
+
+    def test_the_gateway_message_matches_the_s6_service(self):
+        self.assertNotIn("without the Hermes gateway", CONFIG)
+        self.assertIn("The app starts and stops the gateway. Restart the app in Home Assistant.", CONFIG)
+
+    def test_raw_bytes_outside_printable_ascii_are_refused_at_server_level(self):
+        # Python's str.split() treats 0x85 and 0xA0 as whitespace, so the webui would see a cleaner path.
+        # At server level (eight spaces), so it runs before any location is chosen, /health included.
+        self.assertIn('\n        if ($request_uri ~ "[^\\x21-\\x7e]") {\n            return 400;\n        }\n', CONFIG)
 
     def test_terminal_off_answers_with_json_naming_the_option(self):
         self.assertEqual(TERMINAL_OFF.count("default_type application/json;"), 2)
@@ -199,6 +219,28 @@ class RealNginx(unittest.TestCase):
         # A "return" runs before allow and deny, so other addresses get the same fixed answer. Nothing
         # reaches the webui either way, and this request would fail without the rendered part.
         self.assertEqual(self.get("/api/terminal/start")[0], 404)
+
+    def raw(self, request_line):
+        with socket.create_connection(("127.0.0.1", self.port), timeout=10) as connection:
+            connection.sendall(request_line + b"\r\nHost: localhost\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+            reply = b""
+            while chunk := connection.recv(65536):
+                reply += chunk
+        return int(reply.split(b" ", 2)[1]), reply.split(b"\r\n\r\n", 1)[-1]
+
+    def test_the_update_check_and_raw_bytes(self):
+        self.render()
+        self.start()
+        for method in (b"GET", b"POST"):
+            with self.subTest(method=method):
+                self.assertEqual(self.raw(method + b" /api/updates/check HTTP/1.1"), (200, b'{"disabled":true}'))
+        for byte in (b"\x85", b"\xa0", b"\x80", b"\xff", b"\x7f"):
+            for path in (b"/api/updates/clear_lock", b"/api/extensions/registry", b"/api/terminal/start"):
+                with self.subTest(path=path, byte=byte):
+                    self.assertEqual(self.raw(b"POST " + path + byte + b" HTTP/1.1")[0], 400)
+        # Percent-encoded forms are plain ASCII and reach the normal rules (403 from loopback).
+        self.assertEqual(self.raw(b"GET /api/updates/clear_lock%85 HTTP/1.1")[0], 403)
+        self.assertEqual(self.raw(b"GET /health?x=%C3%A4 HTTP/1.1")[0], 200)
 
     def test_a_hung_webui_gives_504_below_the_watchdog_timeout(self):
         self.render(health_path="/slow")

@@ -23,23 +23,25 @@ ARG HERMES_AGENT_DIGEST=sha256:e6d81ae52ebf6a43efa529701405509f20054ba818f179ddd
 ARG HERMES_WEBUI_TAG=v0.52.544
 ARG HERMES_WEBUI_COMMIT=687d80333870c3797d6858738621fca13d1bf27a
 
-# Plugin homeassistant 2.0.1, at its catalog commit.
+# Plugin homeassistant 2.0.1 (the manifest version did not change), at the Claude plugin's commit.
+# It is past the agent catalog's 4d492b1: ha_call_service takes an object for data, and blocked
+# domains are matched in full.
 # Source: https://github.com/NousResearch/hermes-official-plugins/tree/main/homeassistant
-ARG HA_PLUGIN_COMMIT=4d492b1dc5326af3e38bb2cf3e4b9ad6d65f0072
+ARG HA_PLUGIN_COMMIT=6313fad5ddf2c060e7b16782f4860c0d5cdbfcac
 
-# Plugin claude-subscription-directsdk 0.3.4, at the commit its marketplace page names.
+# Plugin claude-subscription-directsdk 0.3.5, at the commit its marketplace page names.
 # Source: https://github.com/NousResearch/hermes-official-plugins/tree/main/claude-subscription-directsdk
-ARG CLAUDE_PLUGIN_COMMIT=e7a218f26db88426ab3e7376f0e000b6e356f5e7
+ARG CLAUDE_PLUGIN_COMMIT=6313fad5ddf2c060e7b16782f4860c0d5cdbfcac
 
 # Claude Code CLI. The integrity hashes for every platform are in claude-code/package-lock.json.
 # Source: https://www.npmjs.com/package/@anthropic-ai/claude-code
 # A bump changes this line and, in claude-code/, runs
 #   npm install --package-lock-only --save-exact @anthropic-ai/claude-code@<version>
 # The build fails if this line and the lock file disagree.
-ARG CLAUDE_CODE_VERSION=2.1.316
+ARG CLAUDE_CODE_VERSION=2.1.325
 
 # App version for the labels, from hermes_webui/config.yaml.
-ARG BUILD_VERSION=0.1.0
+ARG BUILD_VERSION=0.1.1
 
 FROM nousresearch/hermes-agent:${HERMES_AGENT_TAG}@${HERMES_AGENT_DIGEST}
 

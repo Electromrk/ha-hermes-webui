@@ -1,6 +1,6 @@
 """How the webui is started: on the agent's sealed Python, with nothing installed at start.
 
-Static checks always. HERMES_TEST_IMAGE=local/hermes_webui:0.1.0-amd64 adds checks inside the image,
+Static checks always. HERMES_TEST_IMAGE=local/hermes_webui:<version>-amd64 adds checks inside the image,
 which need Docker and no internet.
 """
 

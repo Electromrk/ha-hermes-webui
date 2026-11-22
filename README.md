@@ -18,8 +18,9 @@ To set it up:
 
    The code and the URL belong to your account, so please don't share them. The app never sees your password.
 5. Run `hermes model`, and pick **Claude Subscription DirectSDK (Experimental)** near the end of the list, not **Anthropic**. Pressing Enter twice then keeps Sonnet and the suggested reasoning level.
+6. Start a new chat with the **+** button before you send a message. The chat you opened the terminal in keeps the WebUI's default model `openai/gpt-5.4-mini` and fails with Claude; see [Claude troubleshooting](hermes_webui/DOCS.md#claude-troubleshooting).
 
-**Status:** first release, 0.1.0. Tested on a real Raspberry Pi 5 (8 GB) with a separate test installation; see the changelog. This is an independent project, not made or endorsed by Nous Research or Anthropic.
+**Status:** 0.1.1, a fix release. Tested on a real Raspberry Pi 5 (4 GB, microSD card) and, for 0.1.0, on a Pi 5 (8 GB, SSD), each with a separate test installation; see the changelog. This is an independent project, not made or endorsed by Nous Research or Anthropic.
 
 ## Main features
 
@@ -39,9 +40,9 @@ To set it up:
 |---|---|
 | Hermes Agent | `v0.22.7` (official image, pinned by digest) |
 | Hermes WebUI | `v0.52.544` |
-| `homeassistant` plugin | 2.0.1 |
-| `claude-subscription-directsdk` plugin | 0.3.4 (commit `e7a218f`), used only when you turn it on |
-| Claude Code CLI | 2.1.316, used only when you turn it on |
+| `homeassistant` plugin | 2.0.1 (commit `6313fad`) |
+| `claude-subscription-directsdk` plugin | 0.3.5 (commit `6313fad`), used only when you turn it on |
+| Claude Code CLI | 2.1.325, used only when you turn it on |
 
 The agent and the WebUI are a pair, because the WebUI runs the agent inside its own process. They're always updated and tested together.
 
@@ -69,7 +70,7 @@ This project started as a fork of [hermes-ha-addon](https://github.com/WolframRa
 
 ### Trade-offs
 
-- **The first install and every update are built on your device.** That downloads about 1.3 GB and takes a while on a small device. On a Raspberry Pi 5 the first build took about 5 minutes, mostly the download, and a rebuild under a minute; a slower connection or storage takes longer.
+- **The first install and every update are built on your device.** That downloads about 1.3 GB and takes a while on a small device. On a Raspberry Pi 5 the first build took about 5 minutes on an SSD, mostly the download, and about 22 minutes on a microSD card, mostly writing to the card (estimated). A rebuild took under a minute on the SSD; a slower connection or storage takes longer.
 - **Every backup holds the built image, about 1.3 GB.** The upside is that restoring needs no rebuild and no download. Home Assistant Cloud keeps one backup of under 5 GB, so you may want to leave the app out of automatic backups.
 - **The app is large,** about 3.6 GB unpacked, partly because the official image contains Chromium and ffmpeg, which can't be removed from it.
 - **New versions of Hermes arrive only through app updates,** so they can arrive later than Hermes' own releases.

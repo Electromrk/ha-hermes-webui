@@ -28,6 +28,7 @@ shell_files=(
   tests/harness/lint.sh
   tests/testbed/ha-testbed.sh
   tests/testbed/pi-gate.sh
+  tools/publish/snapshot.sh
 )
 yaml_files=(
   repository.yaml

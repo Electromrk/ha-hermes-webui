@@ -10,7 +10,7 @@
 # 25 minutes (estimated). Exit code 0 only if all steps pass.
 #
 # arm64 is checked on the real Pi 5 with tests/testbed/pi-gate.sh (user decision, 2026-11-11). Only when
-# the test SSD isn't available, HERMES_GATE_ARM64_EMULATION=1 adds the emulated arm64 build and smoke test
+# the test Pi isn't available, HERMES_GATE_ARM64_EMULATION=1 adds the emulated arm64 build and smoke test
 # to the harness lane, which adds over 35 minutes.
 # It uses the testbed, which must not be in use meanwhile, and leaves it in its fresh state: default
 # options, setup wizard due, no backup of its own left behind.
@@ -30,8 +30,13 @@ readonly REPO_ROOT
 readonly LOG_ROOT="${HERMES_GATE_LOGS:-${HOME}/.local/state/hermes-gate}"
 readonly KEEP_RUNS=10
 readonly TESTBED=tests/testbed/ha-testbed.sh
-readonly IMAGE_AMD64=local/hermes_webui:0.1.0-amd64
-readonly IMAGE_ARM64=local/hermes_webui:0.1.0-aarch64
+# Tagged with the version in config.yaml, so a gate run never overwrites the previous version's image,
+# which the migration test needs.
+APP_VERSION="$(sed -n 's/^version: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' "${REPO_ROOT}/hermes_webui/config.yaml")"
+[[ -n "${APP_VERSION}" ]] || { echo "No version found in hermes_webui/config.yaml." >&2; exit 1; }
+readonly APP_VERSION
+readonly IMAGE_AMD64="local/hermes_webui:${APP_VERSION}-amd64"
+readonly IMAGE_ARM64="local/hermes_webui:${APP_VERSION}-aarch64"
 readonly IMAGE_ODD_MODES=local/hermes_webui:gate-odd-modes
 readonly BINFMT_IMAGE="tonistiigi/binfmt:qemu-v9.2.2@sha256:1b804311fe87047a4c96d38b4b3ef6f62fca8cd125265917a9e3dc3c996c39e6"
 readonly BACKUP_LIMIT_BYTES=5000000
@@ -125,7 +130,7 @@ harness_lane() {
   return "${failed}"
 }
 testbed_lane() {
-  step rebuild "${TESTBED}" rebuild
+  step rebuild "${TESTBED}" refresh
   step model-stub "${TESTBED}" model-stub start
   step claude-check python3 tests/testbed/claude_check.py
   step backup backup_gate
@@ -150,7 +155,7 @@ wait "${testbed_pid}" || failed=1
   echo "== backup"
   grep 'Uncompressed' "${RUN_DIR}/backup.log" | cut -c1-160
   echo
-  [[ -n "${ARM64_EMULATION}" ]] || echo "arm64: run tests/testbed/pi-gate.sh on the test SSD."
+  [[ -n "${ARM64_EMULATION}" ]] || echo "arm64: run tests/testbed/pi-gate.sh on the test Pi."
   if [[ ${failed} -eq 0 ]]; then echo "RESULT: GREEN"; else echo "RESULT: RED"; fi
 } | tee -a "${SUMMARY}"
 
